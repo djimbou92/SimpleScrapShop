@@ -5,7 +5,7 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("SimpleScrapShop", "djimbou92 & Copilot", "1.0.1")]
+    [Info("SimpleScrapShop", "djimbou", "1.0.1")]
     [Description("A simple shop that uses scrap as currency and supports weapons, ammo, food, and building items.")]
     public class SimpleScrapShop : RustPlugin
     {
