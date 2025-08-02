@@ -2,17 +2,20 @@ using Oxide.Core.Plugins;
 using Oxide.Game.Rust.Cui;
 using System.Collections.Generic;
 using UnityEngine;
+using System.Linq;
 
 namespace Oxide.Plugins
 {
-    [Info("SimpleScrapShop", "djimbou", "1.0.1")]
-    [Description("A simple shop that uses scrap as currency and supports weapons, ammo, food, and building items.")]
+    [Info("SimpleScrapShop", "djimbou", "1.2.5")]
+    [Description("GUI-based scrap shop with categories and buttons.")]
     public class SimpleScrapShop : RustPlugin
     {
-        // Scrap item ID in Rust
-        private const int ScrapItemId = -932201673;
+        [PluginReference] private Plugin ImageLibrary;
 
-        // Shop data (prices are x10 for x10 scrap servers)
+        private const int ScrapItemId = -932201673;
+        private const string MainUI = "ShopUI.Main";
+        private const string CategoryUI = "ShopUI.Category";
+
         private Dictionary<string, List<ShopItem>> shopCategories = new Dictionary<string, List<ShopItem>>
         {
             ["Weapons"] = new List<ShopItem>
@@ -43,92 +46,186 @@ namespace Oxide.Plugins
             }
         };
 
-        #region Commands
-
         [ChatCommand("shop")]
         private void CmdShop(BasePlayer player, string command, string[] args)
         {
-            if (args.Length == 0)
-            {
-                SendReply(player, "<color=#ffd700>Shop Categories:</color> Weapons, Ammo, Food, Building");
-                SendReply(player, "Example: /shop Weapons");
-                return;
-            }
-
-            string category = args[0].ToLowerInvariant();
-            if (!shopCategories.ContainsKey(FirstUpper(category)))
-            {
-                SendReply(player, $"No such category. Available: Weapons, Ammo, Food, Building");
-                return;
-            }
-
-            ShowCategory(player, FirstUpper(category));
+            OpenMainMenu(player);
         }
 
-        [ChatCommand("buy")]
-        private void CmdBuy(BasePlayer player, string command, string[] args)
+        private void OpenMainMenu(BasePlayer player)
         {
-            if (args.Length < 2)
+            DestroyUI(player);
+
+            CuiElementContainer container = new CuiElementContainer();
+            string panel = container.Add(new CuiPanel
             {
-                SendReply(player, "Usage: /buy <Category> <Number>");
-                return;
+                Image = { Color = "0.1 0.1 0.1 0.95" },
+                RectTransform = { AnchorMin = "0.3 0.2", AnchorMax = "0.7 0.8" },
+                CursorEnabled = true
+            }, "Overlay", MainUI);
+
+            // Title
+            container.Add(new CuiLabel
+            {
+                Text = { Text = "SCRAP SHOP", FontSize = 20, Align = TextAnchor.MiddleCenter },
+                RectTransform = { AnchorMin = "0 0.85", AnchorMax = "1 0.95" }
+            }, panel);
+
+            // Categories
+            float buttonHeight = 0.75f;
+            foreach (var category in shopCategories.Keys)
+            {
+                container.Add(new CuiButton
+                {
+                    Button = { Color = "0.3 0.5 0.8 1", Command = $"cmd.showcategory {category}" },
+                    RectTransform = { AnchorMin = $"0.1 {buttonHeight - 0.1}", AnchorMax = $"0.9 {buttonHeight}" },
+                    Text = { Text = category, FontSize = 16, Align = TextAnchor.MiddleCenter }
+                }, panel);
+                buttonHeight -= 0.12f;
             }
 
-            string cat = FirstUpper(args[0]);
-            int num;
-            if (!shopCategories.ContainsKey(cat) || !int.TryParse(args[1], out num) || num < 1 || num > shopCategories[cat].Count)
+            // Close button
+            container.Add(new CuiButton
             {
-                SendReply(player, "Invalid category or item number.");
-                return;
-            }
+                Button = { Color = "0.8 0.2 0.2 1", Command = "cmd.closeui", Close = MainUI },
+                RectTransform = { AnchorMin = "0.3 0.05", AnchorMax = "0.7 0.1" },
+                Text = { Text = "CLOSE", FontSize = 14, Align = TextAnchor.MiddleCenter }
+            }, panel);
 
-            var item = shopCategories[cat][num - 1];
-            TryBuy(player, item);
+            CuiHelper.AddUi(player, container);
         }
 
-        #endregion
-
-        #region Core Logic
-
-        private void ShowCategory(BasePlayer player, string cat)
+        [ConsoleCommand("cmd.showcategory")]
+        private void CmdShowCategory(ConsoleSystem.Arg arg)
         {
-            var list = shopCategories[cat];
-            SendReply(player, $"<color=#00ffff>{cat} Shop</color> (use /buy {cat} <number>):");
-            for (int i = 0; i < list.Count; i++)
+            var player = arg.Player();
+            if (player == null || arg.Args == null || arg.Args.Length == 0) return;
+            
+            ShowCategoryUI(player, arg.Args[0]);
+        }
+
+        private void ShowCategoryUI(BasePlayer player, string category)
+        {
+            if (!shopCategories.ContainsKey(category)) return;
+
+            DestroyUI(player);
+
+            CuiElementContainer container = new CuiElementContainer();
+            string panel = container.Add(new CuiPanel
             {
-                var si = list[i];
-                SendReply(player, $"{i + 1}. {si.Name} x{si.Amount} - <color=#ffd700>{si.Price} scrap</color>");
+                Image = { Color = "0.1 0.1 0.1 0.95" },
+                RectTransform = { AnchorMin = "0.2 0.1", AnchorMax = "0.8 0.9" },
+                CursorEnabled = true
+            }, "Overlay", CategoryUI);
+
+            // Title
+            container.Add(new CuiLabel
+            {
+                Text = { Text = category.ToUpper(), FontSize = 20, Align = TextAnchor.MiddleCenter },
+                RectTransform = { AnchorMin = "0 0.9", AnchorMax = "1 0.95" }
+            }, panel);
+
+            // Items
+            float itemPos = 0.8f;
+            var items = shopCategories[category];
+            
+            for (int i = 0; i < items.Count; i++)
+            {
+                var item = items[i];
+                string buttonText = $"{item.Name} - {item.Price} scrap";
+                if (item.Amount > 1) buttonText += $" (x{item.Amount})";
+
+                container.Add(new CuiButton
+                {
+                    Button = { Color = "0.2 0.6 0.2 1", Command = $"cmd.buy {category} {i}" },
+                    RectTransform = { AnchorMin = $"0.1 {itemPos - 0.1}", AnchorMax = $"0.9 {itemPos}" },
+                    Text = { Text = buttonText, FontSize = 14, Align = TextAnchor.MiddleLeft }
+                }, panel);
+                
+                itemPos -= 0.12f;
             }
+
+            // Back button
+            container.Add(new CuiButton
+            {
+                Button = { Color = "0.3 0.5 0.8 1", Command = "cmd.shop" },
+                RectTransform = { AnchorMin = "0.1 0.05", AnchorMax = "0.4 0.1" },
+                Text = { Text = "BACK", FontSize = 14, Align = TextAnchor.MiddleCenter }
+            }, panel);
+
+            // Close button
+            container.Add(new CuiButton
+            {
+                Button = { Color = "0.8 0.2 0.2 1", Command = "cmd.closeui", Close = CategoryUI },
+                RectTransform = { AnchorMin = "0.6 0.05", AnchorMax = "0.9 0.1" },
+                Text = { Text = "CLOSE", FontSize = 14, Align = TextAnchor.MiddleCenter }
+            }, panel);
+
+            CuiHelper.AddUi(player, container);
+        }
+
+        [ConsoleCommand("cmd.closeui")]
+        private void CmdCloseUI(ConsoleSystem.Arg arg)
+        {
+            var player = arg.Player();
+            if (player == null) return;
+            DestroyUI(player);
+        }
+
+        [ConsoleCommand("cmd.shop")]
+        private void CmdShopConsole(ConsoleSystem.Arg arg)
+        {
+            var player = arg.Player();
+            if (player == null) return;
+            OpenMainMenu(player);
+        }
+
+        [ConsoleCommand("cmd.buy")]
+        private void CmdBuy(ConsoleSystem.Arg arg)
+        {
+            var player = arg.Player();
+            if (player == null || arg.Args == null || arg.Args.Length < 2) return;
+            
+            string category = arg.Args[0];
+            if (!int.TryParse(arg.Args[1], out int index) || !shopCategories.ContainsKey(category)) return;
+            if (index < 0 || index >= shopCategories[category].Count) return;
+
+            TryBuy(player, shopCategories[category][index]);
         }
 
         private void TryBuy(BasePlayer player, ShopItem item)
         {
-            int totalScrap = GetItemCount(player, ScrapItemId);
-            if (totalScrap < item.Price)
+            int scrapAmount = GetItemCount(player, ScrapItemId);
+            if (scrapAmount < item.Price)
             {
-                SendReply(player, $"Not enough scrap! You need {item.Price} scrap.");
+                player.ChatMessage($"<color=red>You need {item.Price} scrap (you have {scrapAmount})</color>");
                 return;
             }
+
             TakeItem(player, ScrapItemId, item.Price);
             player.GiveItem(ItemManager.CreateByName(item.ShortName, item.Amount));
-            SendReply(player, $"Purchased <color=#00ff00>{item.Name} x{item.Amount}</color> for <color=#ffd700>{item.Price} scrap</color>.");
+            player.ChatMessage($"<color=green>Purchased {item.Name} x{item.Amount} for {item.Price} scrap!</color>");
         }
 
         private int GetItemCount(BasePlayer player, int itemId)
         {
-            int count = 0;
-            foreach (var item in player.inventory.AllItems())
-                if (item.info.itemid == itemId)
-                    count += item.amount;
-            return count;
+            return player.inventory.containerMain.itemList
+                .Concat(player.inventory.containerBelt.itemList)
+                .Concat(player.inventory.containerWear.itemList)
+                .Where(i => i.info.itemid == itemId)
+                .Sum(i => i.amount);
         }
 
         private void TakeItem(BasePlayer player, int itemId, int amount)
         {
             int remaining = amount;
-            foreach (var item in player.inventory.AllItems())
+            var items = player.inventory.containerMain.itemList
+                .Concat(player.inventory.containerBelt.itemList)
+                .Concat(player.inventory.containerWear.itemList)
+                .Where(i => i.info.itemid == itemId);
+
+            foreach (var item in items)
             {
-                if (item.info.itemid != itemId) continue;
                 int toTake = Mathf.Min(item.amount, remaining);
                 item.UseItem(toTake);
                 remaining -= toTake;
@@ -136,15 +233,11 @@ namespace Oxide.Plugins
             }
         }
 
-        private string FirstUpper(string str)
+        private void DestroyUI(BasePlayer player)
         {
-            if (str.Length == 0) return str;
-            return char.ToUpper(str[0]) + str.Substring(1).ToLower();
+            CuiHelper.DestroyUi(player, MainUI);
+            CuiHelper.DestroyUi(player, CategoryUI);
         }
-
-        #endregion
-
-        #region Helper
 
         private class ShopItem
         {
@@ -161,7 +254,5 @@ namespace Oxide.Plugins
                 Amount = amount;
             }
         }
-
-        #endregion
     }
 }
